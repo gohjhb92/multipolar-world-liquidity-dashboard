@@ -28,9 +28,10 @@ export default function WorldMap({
   const mapNode = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const byIso = useMemo(() => new Map(countries.map((country) => [country.iso3, country])), [countries]);
+  const isoProperty = "ISO3166-1-Alpha-3";
   const colorExpression = useMemo(() => {
     const pairs = countries.flatMap((country) => [country.iso3, blocColors[country.bloc]]);
-    return ["match", ["get", "ISO_A3"], ...pairs, blocColors.UNKNOWN];
+    return ["match", ["get", isoProperty], ...pairs, blocColors.UNKNOWN];
   }, [countries]);
 
   useEffect(() => {
@@ -69,7 +70,7 @@ export default function WorldMap({
         source: "countries",
         paint: {
           "fill-color": colorExpression as maplibregl.ExpressionSpecification,
-          "fill-opacity": ["case", ["in", ["get", "ISO_A3"], ["literal", countries.map((country) => country.iso3)]], 0.82, 0.16],
+          "fill-opacity": ["case", ["in", ["get", isoProperty], ["literal", countries.map((country) => country.iso3)]], 0.82, 0.16],
         },
       });
       map.addLayer({
@@ -85,7 +86,7 @@ export default function WorldMap({
 
     map.on("click", "countries-fill", (event) => {
       const feature = event.features?.[0];
-      const iso = feature?.properties?.ISO_A3;
+      const iso = feature?.properties?.[isoProperty];
       const country = typeof iso === "string" ? byIso.get(iso) : undefined;
       if (country) onSelect(country);
     });
@@ -108,7 +109,7 @@ export default function WorldMap({
     const map = mapRef.current;
     if (!map?.isStyleLoaded() || !map.getLayer("countries-fill")) return;
     map.setPaintProperty("countries-fill", "fill-color", colorExpression);
-    map.setPaintProperty("countries-fill", "fill-opacity", ["case", ["in", ["get", "ISO_A3"], ["literal", countries.map((country) => country.iso3)]], 0.82, 0.16]);
+    map.setPaintProperty("countries-fill", "fill-opacity", ["case", ["in", ["get", isoProperty], ["literal", countries.map((country) => country.iso3)]], 0.82, 0.16]);
   }, [colorExpression, countries]);
 
   return (
