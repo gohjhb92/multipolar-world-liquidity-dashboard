@@ -17,6 +17,21 @@ export type CompositeScores = {
   grandMacroStatecraftScore: number;
 };
 
+export type PullBreakdown = {
+  dollarPull: number;
+  yuanPull: number;
+  balance: number;
+  topDriver: string;
+};
+
+export type ScoreExplanation = {
+  key: keyof CompositeScores;
+  label: string;
+  value: number;
+  formula: string;
+  drivers: Array<{ label: string; value: number }>;
+};
+
 const clamp = (value: number) => Math.max(0, Math.min(100, Math.round(value)));
 const avg = (values: number[]) => values.reduce((sum, value) => sum + value, 0) / values.length;
 
@@ -52,6 +67,11 @@ const scenarioDeltas: Record<ScenarioKey, Partial<Record<keyof CompositeScores, 
 };
 
 export function calculateBlocPressure(country: CountryProfile) {
+  const { dollarPull, yuanPull } = calculateCountryPulls(country);
+  return clamp(Math.abs(dollarPull - yuanPull) + avg([country.sanctionsExposure, country.dollarFundingDependence]) * 0.22);
+}
+
+export function calculateCountryPulls(country: CountryProfile): PullBreakdown {
   const dollarPull =
     country.dollarFundingDependence * 0.28 +
     country.usSecurityDependence * 0.22 +
@@ -65,7 +85,21 @@ export function calculateBlocPressure(country: CountryProfile) {
     country.petroyuanMomentum * 0.24 +
     country.sanctionsExposure * 0.12;
 
-  return clamp(Math.abs(dollarPull - yuanPull) + avg([country.sanctionsExposure, country.dollarFundingDependence]) * 0.22);
+  const drivers = [
+    { label: "Dollar funding", value: country.dollarFundingDependence },
+    { label: "U.S. security", value: country.usSecurityDependence },
+    { label: "China trade", value: country.chinaTradeDependence },
+    { label: "CNY settlement", value: country.cnySettlementExposure },
+    { label: "Energy dollar share", value: country.energySettlementDollarShare },
+    { label: "Sanctions exposure", value: country.sanctionsExposure },
+  ].sort((a, b) => b.value - a.value);
+
+  return {
+    dollarPull: clamp(dollarPull),
+    yuanPull: clamp(yuanPull),
+    balance: clamp(50 + (dollarPull - yuanPull) * 0.5),
+    topDriver: drivers[0]?.label ?? "Mixed exposure",
+  };
 }
 
 export function calculateMoralHazard(country: CountryProfile, controls: ControlState) {
@@ -120,6 +154,93 @@ export function calculateCompositeScores(
   return Object.fromEntries(
     Object.entries(base).map(([key, value]) => [key, clamp(value + (deltas[key as keyof CompositeScores] ?? 0))]),
   ) as CompositeScores;
+}
+
+export function explainCompositeScores(
+  countries: CountryProfile[],
+  controls: ControlState,
+  scenario: ScenarioKey,
+): ScoreExplanation[] {
+  const scores = calculateCompositeScores(countries, controls, scenario);
+  const dollarFundingStress = clamp(controls.crisisIntensity * 0.72 + controls.sanctionsIntensity * 0.18 + controls.energyShock * 0.1);
+  const swapLineDemand = clamp(avg(countries.map((country) => country.dollarFundingDependence)) * 0.5 + controls.usSwapWillingness * 0.5);
+  const treasurySafeHavenDemand = clamp(avg(countries.map((country) => country.treasuryRecyclingScore)) * 0.55 + controls.crisisIntensity * 0.45);
+  const cipsGrowth = clamp(avg(countries.map((country) => country.cnySettlementExposure)) * 0.55 + controls.chinaSettlementAdoption * 0.45);
+  const reserveDiversification = clamp(100 - avg(countries.map((country) => country.energySettlementDollarShare)));
+  const counterparties = clamp(countries.filter((country) => country.swapLineStatus !== "none" && country.swapLineStatus !== "unknown").length * 4);
+  const collateralWeakness = clamp(avg(countries.map((country) => 100 - country.collateralQuality)));
+
+  return [
+    {
+      key: "dollarPullIndex",
+      label: "Dollar Pull Index",
+      value: scores.dollarPullIndex,
+      formula: "DXY/stress proxy + swap-line demand + Treasury safe-haven demand",
+      drivers: [
+        { label: "Dollar funding stress", value: dollarFundingStress },
+        { label: "Swap-line demand", value: swapLineDemand },
+        { label: "Treasury safe-haven demand", value: treasurySafeHavenDemand },
+      ],
+    },
+    {
+      key: "yuanRailsIndex",
+      label: "Yuan Rails Index",
+      value: scores.yuanRailsIndex,
+      formula: "CIPS/CNY exposure + China settlement adoption + sanctions-driven routing",
+      drivers: [
+        { label: "CNY settlement exposure", value: cipsGrowth },
+        { label: "China adoption slider", value: controls.chinaSettlementAdoption },
+        { label: "Sanctions routing pressure", value: clamp(controls.sanctionsIntensity * 0.45) },
+      ],
+    },
+    {
+      key: "middleStateHedgingIndex",
+      label: "Middle-State Hedging",
+      value: scores.middleStateHedgingIndex,
+      formula: "U.S. security + China trade + reserve diversification + sanctions sensitivity",
+      drivers: [
+        { label: "Average U.S. security dependence", value: clamp(avg(countries.map((country) => country.usSecurityDependence))) },
+        { label: "Average China trade dependence", value: clamp(avg(countries.map((country) => country.chinaTradeDependence))) },
+        { label: "Reserve diversification proxy", value: reserveDiversification },
+        { label: "Sanctions sensitivity", value: controls.sanctionsIntensity },
+      ],
+    },
+    {
+      key: "petroyuanMomentumScore",
+      label: "Petroyuan Momentum",
+      value: scores.petroyuanMomentumScore,
+      formula: "China energy demand + Gulf-China trade + CNY settlement + dollar-peg stress",
+      drivers: [
+        { label: "Country petroyuan average", value: clamp(avg(countries.map((country) => country.petroyuanMomentum))) },
+        { label: "Energy shock", value: controls.energyShock },
+        { label: "China settlement adoption", value: controls.chinaSettlementAdoption },
+      ],
+    },
+    {
+      key: "usLiquidityBackstopRisk",
+      label: "U.S. Backstop Risk",
+      value: scores.usLiquidityBackstopRisk,
+      formula: "Counterparties + swap willingness + crisis probability + collateral weakness",
+      drivers: [
+        { label: "Counterparty count proxy", value: counterparties },
+        { label: "U.S. swap willingness", value: controls.usSwapWillingness },
+        { label: "Crisis probability", value: controls.crisisIntensity },
+        { label: "Collateral weakness", value: collateralWeakness },
+      ],
+    },
+    {
+      key: "grandMacroStatecraftScore",
+      label: "Grand Macro Statecraft",
+      value: scores.grandMacroStatecraftScore,
+      formula: "Sanctions + swap lines + energy stress + China rails + dollar stress",
+      drivers: [
+        { label: "Sanctions intensity", value: controls.sanctionsIntensity },
+        { label: "Swap-line policy pressure", value: controls.usSwapWillingness },
+        { label: "Energy shock", value: controls.energyShock },
+        { label: "Payment-rail fragmentation", value: controls.chinaSettlementAdoption },
+      ],
+    },
+  ];
 }
 
 export function adjustedCountryProfile(country: CountryProfile, controls: ControlState, scenario: ScenarioKey): CountryProfile {

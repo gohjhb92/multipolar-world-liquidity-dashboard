@@ -1,12 +1,12 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Activity, Banknote, Cable, Filter, Fuel, Globe2, Landmark, Search, ShieldAlert } from "lucide-react";
+import { Activity, Banknote, Cable, Filter, Fuel, Globe2, Info, Search, ShieldAlert } from "lucide-react";
 import { Bar, BarChart, CartesianGrid, Cell, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import CountryDrawer from "@/components/CountryDrawer";
 import MetricCard from "@/components/MetricCard";
 import ScenarioControls, { defaultControls } from "@/components/ScenarioControls";
-import WorldMap from "@/components/WorldMap";
+import WorldMap, { type MapMode } from "@/components/WorldMap";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -21,7 +21,7 @@ import {
   type CountryProfile,
   type ScenarioKey,
 } from "@/data/world-dashboard";
-import { adjustedCountryProfile, calculateBlocPressure, calculateCompositeScores } from "@/lib/scoring";
+import { adjustedCountryProfile, calculateBlocPressure, calculateCompositeScores, calculateCountryPulls, explainCompositeScores } from "@/lib/scoring";
 
 const blocColorClass: Record<Bloc, string> = {
   US_DOLLAR: "text-emerald-300",
@@ -91,7 +91,7 @@ function CountryTable({
           >
             <span>
               <span className="block font-medium text-slate-100">{country.name}</span>
-              <span className="font-mono text-[10px] text-slate-500">{country.iso3} · {confidenceLabels[country.confidence]}</span>
+              <span className="font-mono text-[10px] text-slate-500">{country.iso3} - {confidenceLabels[country.confidence]}</span>
             </span>
             <span className={blocColorClass[country.bloc]}>{blocLabels[country.bloc]}</span>
             <span className="font-mono text-slate-300">{country.dollarFundingDependence}</span>
@@ -104,12 +104,117 @@ function CountryTable({
   );
 }
 
+function ScoreExplainer({
+  explanations,
+}: {
+  explanations: ReturnType<typeof explainCompositeScores>;
+}) {
+  return (
+    <section className="terminal-panel rounded-lg p-4">
+      <div className="mb-4 flex items-center gap-2">
+        <Info className="h-4 w-4 text-teal-300" />
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-100">Why The Scores Move</h2>
+      </div>
+      <div className="grid gap-3 lg:grid-cols-2">
+        {explanations.map((item) => (
+          <div key={item.key} className="rounded-md border border-slate-800 bg-slate-950/50 p-3">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold text-slate-100">{item.label}</p>
+                <p className="mt-1 text-xs leading-relaxed text-slate-500">{item.formula}</p>
+              </div>
+              <span className="font-mono text-xl text-teal-300">{item.value}</span>
+            </div>
+            <div className="mt-3 space-y-2">
+              {item.drivers.map((driver) => (
+                <div key={driver.label}>
+                  <div className="mb-1 flex justify-between gap-3 text-[11px]">
+                    <span className="text-slate-400">{driver.label}</span>
+                    <span className="font-mono text-slate-200">{driver.value}</span>
+                  </div>
+                  <div className="h-1 overflow-hidden rounded-full bg-slate-800">
+                    <div className="h-full rounded-full bg-teal-400" style={{ width: `${driver.value}%` }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function CountryComparison({
+  countries,
+  onSelect,
+}: {
+  countries: CountryProfile[];
+  onSelect: (country: CountryProfile) => void;
+}) {
+  const focusIso = ["SAU", "ARE", "QAT", "SGP", "IND", "BRA", "TUR", "IDN"];
+  const rows = focusIso
+    .map((iso) => countries.find((country) => country.iso3 === iso))
+    .filter((country): country is CountryProfile => Boolean(country));
+
+  return (
+    <section className="terminal-panel overflow-hidden rounded-lg">
+      <div className="border-b border-slate-800 px-4 py-3">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-100">Strategic Country Comparison</h2>
+        <p className="mt-1 text-xs text-slate-500">Hedging pressure is clearest where U.S. security, dollar pegs, China trade, and energy settlement overlap.</p>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[880px] text-left text-sm">
+          <thead className="border-b border-slate-800 font-mono text-[10px] uppercase tracking-wide text-slate-500">
+            <tr>
+              <th className="px-4 py-2">Country</th>
+              <th className="px-4 py-2">Dollar Pull</th>
+              <th className="px-4 py-2">Yuan Pull</th>
+              <th className="px-4 py-2">Energy $ Share</th>
+              <th className="px-4 py-2">Security</th>
+              <th className="px-4 py-2">China Trade</th>
+              <th className="px-4 py-2">Petroyuan</th>
+              <th className="px-4 py-2">Read</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((country) => {
+              const pulls = calculateCountryPulls(country);
+              const tension = Math.abs(pulls.dollarPull - pulls.yuanPull);
+              return (
+                <tr key={country.iso3} className="border-b border-slate-900 last:border-0">
+                  <td className="px-4 py-3">
+                    <button onClick={() => onSelect(country)} className="text-left font-medium text-slate-100 hover:text-teal-300">
+                      {country.name}
+                    </button>
+                    <div className="font-mono text-[10px] text-slate-500">{country.iso3}</div>
+                  </td>
+                  <td className="px-4 py-3 font-mono text-emerald-300">{pulls.dollarPull}</td>
+                  <td className="px-4 py-3 font-mono text-red-300">{pulls.yuanPull}</td>
+                  <td className="px-4 py-3 font-mono text-sky-300">{country.energySettlementDollarShare}</td>
+                  <td className="px-4 py-3 font-mono text-slate-300">{country.usSecurityDependence}</td>
+                  <td className="px-4 py-3 font-mono text-slate-300">{country.chinaTradeDependence}</td>
+                  <td className="px-4 py-3 font-mono text-amber-300">{country.petroyuanMomentum}</td>
+                  <td className="px-4 py-3 text-xs text-slate-400">
+                    {tension < 15 ? "True hedge node" : pulls.dollarPull > pulls.yuanPull ? "Dollar anchor" : "Yuan-rails pressure"}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
 export default function DashboardShell() {
   const [scenario, setScenario] = useState<ScenarioKey>("BASELINE");
   const [controls, setControls] = useState(defaultControls);
   const [search, setSearch] = useState("");
   const [blocFilter, setBlocFilter] = useState<Bloc | "ALL">("ALL");
   const [selectedCountry, setSelectedCountry] = useState<CountryProfile | null>(null);
+  const [mapMode, setMapMode] = useState<MapMode>("bloc");
 
   const modeledCountries = useMemo(
     () => countryProfiles.map((country) => adjustedCountryProfile(country, controls, scenario)),
@@ -126,6 +231,7 @@ export default function DashboardShell() {
   }, [modeledCountries, search, blocFilter]);
 
   const scores = useMemo(() => calculateCompositeScores(modeledCountries, controls, scenario), [modeledCountries, controls, scenario]);
+  const scoreExplanations = useMemo(() => explainCompositeScores(modeledCountries, controls, scenario), [modeledCountries, controls, scenario]);
   const activeScenario = scenarios.find((item) => item.key === scenario) ?? scenarios[0];
 
   const blocCounts = Object.entries(blocLabels).map(([bloc, label]) => ({
@@ -193,7 +299,9 @@ export default function DashboardShell() {
                 <MetricCard label="U.S. Backstop Risk" value={scores.usLiquidityBackstopRisk} detail="Counterparties, line size proxy, crisis probability, collateral weakness." trend="up" accent="amber" />
                 <MetricCard label="Grand Macro Statecraft" value={scores.grandMacroStatecraftScore} detail="Sanctions, export controls, defense, swaps, industry policy, payment rails." trend="up" accent="teal" />
               </div>
-              <WorldMap countries={modeledCountries} selected={selectedCountry} onSelect={setSelectedCountry} />
+              <WorldMap countries={modeledCountries} selected={selectedCountry} onSelect={setSelectedCountry} mode={mapMode} onModeChange={setMapMode} />
+              <ScoreExplainer explanations={scoreExplanations} />
+              <CountryComparison countries={modeledCountries} onSelect={setSelectedCountry} />
             </div>
             <div className="space-y-4">
               <ScenarioControls scenario={scenario} setScenario={setScenario} controls={controls} setControls={setControls} />
@@ -321,6 +429,16 @@ export default function DashboardShell() {
                   <Badge tone={source.tag === "CONFIRMED" ? "green" : source.tag === "REPORTED" ? "amber" : source.tag === "SCENARIO" ? "red" : "blue"}>{source.tag}</Badge>
                 </div>
                 <p className="mt-3 text-sm leading-relaxed text-slate-400">{source.note}</p>
+                <div className="mt-4 flex items-center justify-between gap-3 border-t border-slate-800 pt-3 text-xs">
+                  <span className="font-mono uppercase tracking-wide text-slate-500">{source.source}</span>
+                  {source.url ? (
+                    <a href={source.url} target="_blank" rel="noreferrer" className="text-teal-300 hover:text-teal-200">
+                      Open source
+                    </a>
+                  ) : (
+                    <span className="text-slate-600">No verified link yet</span>
+                  )}
+                </div>
               </section>
             ))}
           </div>
